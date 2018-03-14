@@ -1,0 +1,504 @@
+#! /bin/sh
+# Copyright (c) 2009-2018 LG Electronics, Inc.
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+# http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+#
+# SPDX-License-Identifier: Apache-2.0
+
+#set -x
+
+verbose=off
+debug=off
+fork=off
+debugger_port=5885
+inspector_port=8080
+timeouts=on
+heap_size=0	# 0 means use default
+enable_gc=off
+create_activity=on
+unified=off
+respawn=off
+user=@RUN_AS_USER@
+
+# Set fork default based on result of upstart check
+if [ -f /var/run/node/fork ]; then
+	fork=on
+fi
+
+# Jail master switch overrides the other jail switches- if
+# this is off, all js jails are off.  Valid values are "on" and "off".
+jail=off
+# Jail palm services.  Valid values are "off", "collective" and "individual"
+# Collective means that all palm services share the same jail.
+# so one could read data owned by another, but startup of new
+# services can be faster.
+# Individual means each service gets its own jail.  It is the default.
+# turn palm jails off for now-ericm
+palm_jail=off
+# palm services that don't run in jail:
+palm_jail_pardons="com.palm.service.backup com.palm.service.migration"
+# Jail 3rd party services. Same usage as palm_jail.
+thirdparty_jail=individual
+
+while [ $# -gt 0 ]
+do
+	case "$1" in
+		-v)  verbose=on;;
+		-a)  create_activity=off;;
+		-d)  debug=on;;
+		-f)  fork=on;;
+		-g)  enable_gc=on;;
+		-s)  heap_size=$2;shift;;
+		-p)  debugger_port=$2;shift;debug=on;;
+		-k)  timeouts=off;;
+		-j)  jail=on;;
+		-u)  unified=on;;
+		-n)  ;;
+		-i)  inspector_port=$2;shift;debug=on;;
+		-r)  user=root;;
+		-l)  user=$2;shift;;
+		-w)  respawn=on;;
+		--)  shift; break;;
+		-*)
+		echo >&2 "usage: $0 [-v] [-d] [-f] [-s size] [-p debugger-port] [-j] [-k] [-n] [-i inspector-port] directory"
+		echo >&2 "-v : verbose mode"
+		echo >&2 "-a : disable activity creation -- used only for system services"
+		echo >&2 "-d : enable debugger"
+		echo >&2 "-f : launch using Node.js fork server"
+		echo >&2 "-g : enable the gc extension"
+		echo >&2 "-s : specify max heap size (bytes) -- ignored when using fork server"
+		echo >&2 "-p [port] : set port for debugger [default: 5885]"
+		echo >&2 "-k : disable timeouts (keep running)"
+		echo >&2 "-j : enable jailer"
+		echo >&2 "-n : use node.js engine (now the default, this option is still recognized for compatibility)"
+		echo >&2 "-i [port] : set port used by node-inspector [default: 8080]"
+		echo >&2 "-u : unified service -- used only for system services"
+		echo >&2 "-r : run as root user"
+		echo >&2 "-l user : run under privileges of specified user (login name)"
+		echo >&2 "-w : respawn the service when it exits abruptly"
+		exit 1;;
+		*)  break;;	# terminate while loop
+	esac
+	shift
+done
+
+if ! grep -q "^$user:" /etc/passwd ; then
+	msg="No passwd entry for user \"$user\", exiting"
+	logger -p error -t run-js-service "$1: $msg"
+	if [ $verbose = on ] ; then
+		echo "ERROR: $msg"
+	fi
+	exit 1;
+fi
+
+if [ $unified = on ]; then
+	if ! status unified_service_server 2> /dev/null | grep -q "start/running" ; then
+		msg="USM not running, -u ignored"
+		logger -p warning -t run-js-service "$1: $msg"
+		if [ $verbose = on ] ; then
+			echo "WARNING: $msg"
+		fi
+		unified=off
+	else
+		fork=off
+	fi
+fi
+
+if [ x$BEDLAM_ROOT != x ]; then
+	FRAMEWORKS_PATH=$BEDLAM_ROOT/palm/frameworks
+	NODE_ADDONS=$BEDLAM_ROOT/palm/nodejs
+	NODE=$BEDLAM_ROOT/bin/node
+	BIN_PATH=$BEDLAM_ROOT/bin
+	SERVICE_LAUNCHER=$BEDLAM_ROOT/palm/services/jsservicelauncher
+else
+	FRAMEWORKS_PATH=/usr/palm/frameworks
+	NODE_ADDONS=/usr/lib/nodejs:/usr/lib/node_modules
+	NODE=/usr/bin/node
+	BIN_PATH=/usr/bin
+	SERVICE_LAUNCHER=/usr/palm/services/jsservicelauncher
+fi
+
+SERVICE_PATH=$1
+if [ -z "$SERVICE_PATH" ]; then
+        echo "Service path not specified.  Exiting."
+        exit 3
+fi
+CURDIR=`pwd` # save environment since some sh has no pushd
+cd `dirname ${SERVICE_PATH}`
+if [ $? != 0 ]; then
+	echo "Invalid service path ${SERVICE_PATH}.  Exiting."
+	exit 3
+fi
+SERVICE_PATH=`pwd`/`basename ${SERVICE_PATH}`
+cd ${CURDIR} # restore previous environment for safety's sake
+echo "SERVICE_PATH is ${SERVICE_PATH}" # remove this line in production
+case "${SERVICE_PATH}" in
+	/usr/palm/services/*)
+		ROM_SERVICE=on
+		ROLES_PATH=/usr/share/ls2
+		if [ "$debug" = on -a ! -f "/var/luna/preferences/debug_system_services" ] ; then
+			echo "-d disabled for system services"
+			debug=off
+			exit 2
+		fi
+		;;
+	/media/cryptofs/apps/*)
+		ROM_SERVICE=off
+		ROLES_PATH=/var/palm/ls2
+		if [ "$debug" = on -a ! -f "/var/luna/preferences/devmode_enabled" ] ; then
+			echo "-d disabled, not in Developer mode"
+			debug=off
+			exit 2
+		fi
+		;;
+	/media/developer/*)
+		ares_config="$SERVICE_PATH/_ares"
+		if [ -f "$ares_config/debugger-port" ]; then
+			debug=on
+			debugger_port=`cat "$ares_config/debugger-port"`
+			case "$debugger_port" in
+				[0-9][0-9][0-9][0-9]|[0-9][0-9][0-9][0-9][0-9]) ;;
+				* ) debugger_port=5885 ;;
+			esac
+			echo "setting debugger port to $debugger_port"
+		fi
+		if [ -f "$ares_config/inspector-port" ]; then
+			debug=on
+			inspector_port=`cat "$ares_config/inspector-port"`
+			case "$inspector_port" in
+				[0-9][0-9][0-9][0-9]|[0-9][0-9][0-9][0-9][0-9]) ;;
+				* ) inspector_port=8080 ;;
+			esac
+			echo "setting inspector port to $inspector_port"
+		fi
+		ROM_SERVICE=off
+		ROLES_PATH=/var/palm/ls2-dev
+		if [ "$debug" = on -a ! -f "/var/luna/preferences/devmode_enabled" ] ; then
+			echo "-d disabled, not in Developer mode"
+			debug=off
+			exit 2
+		fi
+		;;
+	/tmp/usb/*)
+		ROM_SERVICE=off
+		ROLES_PATH=/nonexistent
+		;;
+	*)
+		echo "Invalid service path ${SERVICE_PATH}.  Exiting."
+		exit 3
+		;;
+esac
+
+# Disable the fork server if we're debugging
+if [ $debug = on ]; then
+       fork=off
+fi
+
+SERVICE_NAME=$(basename $SERVICE_PATH)
+FULL_SERVICE_NAME=${SERVICE_NAME}
+SERVICE_NAME_LENGTH=${#SERVICE_NAME}
+if [ $SERVICE_NAME_LENGTH -gt 13 ] ; then
+	if [ x`uname` != xDarwin ] ; then
+		SERVICE_NAME_INDEX=$(expr $SERVICE_NAME_LENGTH - 12)
+		SERVICE_NAME=$(expr substr $SERVICE_NAME $SERVICE_NAME_INDEX 13)
+	fi
+fi
+
+# Identify which cpushareholder group the runner is in.
+#CGROUP="/no-group/not-present" # use non-existent directory and path, for failure case. Don't allow CGROUP to be empty string
+CGROUP="/tmp/run-js-service-no-cgroup" # if cgroup/cpushareholder not in use, provide real file to eliminate EBADF exception
+if [ -f /proc/$$/cgroup -a -f /etc/default/cpushareholder ] ; then
+	. /etc/default/cpushareholder
+	cpushareholder_identify_current_group $$
+	CGROUP=$CSHR_GROUPS/$CSHR_GROUP/tasks
+fi
+
+# figure out how to jail the app
+# is the app a palm app or 3rd party?
+# does each app get its own jail or use a common one?
+if [ "$jail" = on ] ; then
+	case "${FULL_SERVICE_NAME}" in
+	com.palm.*|com.webos.*|com.lge.*)
+		appid="com.palm.triton"
+		case ${palm_jail} in
+		off) jail=off;;
+		c*) ;;
+		*) appid=${FULL_SERVICE_NAME};;
+		esac
+		# check for exceptions:
+		for i in "${palm_jail_pardons}"
+		do
+			if [ "${i}" = "${appid}" ]
+			then
+				jail=off
+			fi
+		done
+		;;
+	*)
+		# default for collective:
+		appid="com.palm.generic.service.thirdparty"
+		case ${thirdparty_jail} in
+		off) jail=off;;
+		c*) ;;
+		*) appid=${FULL_SERVICE_NAME};;
+		esac
+		;;
+	esac
+	# determine if service is in the rom or was installed, as they
+	# use different configs
+	jailtype="triton"
+	if [ "$ROM_SERVICE" = off ] ; then
+		jailtype="triton-inst"
+	fi
+
+	# palm or 3rdparty jails might be off
+	if [ "$jail" = on ] ; then
+
+		JAIL_STRING="/usr/bin/jailer -t ${jailtype} -i "${appid}" -p $SERVICE_PATH"
+
+		if [ "$fork" = on ] ; then
+			# execute jailer to get JAIL_ params
+
+			JAIL_STRING="$JAIL_STRING -S"
+			eval `$JAIL_STRING`
+			JAIL_STRING=
+
+			if [ x$JAIL_ROOT = x ] ; then
+				# jail setup failed, no run
+				exit 1
+			fi
+
+			if [ $JAIL_ROOT = NONE ] ; then
+				jail=off
+				JAIL_ROOT=
+			fi
+		fi
+	fi
+fi
+
+# Only system services can use these option
+logger -s "[run-js-service] FULL_SERVICE_NAME " $FULL_SERVICE_NAME
+
+case "${FULL_SERVICE_NAME}" in
+	com.palm.*|com.webos.*|com.lge.*)
+		echo "ROM_SERVICE " $ROM_SERVICE
+		echo "jail " $jail
+		if [ $FULL_SERVICE_NAME != com.lge.service.wta ] ; then
+			[ $ROM_SERVICE = off -o $jail = on ] && unified=off
+		fi
+		;;
+	*) create_activity=on; unified=off;;
+esac
+
+if [ x$1 != x ]
+then
+	if [ $fork = off ]; then
+		cd $1
+	fi
+fi
+
+export NODE_PATH="$FRAMEWORKS_PATH:$NODE_ADDONS"
+
+if [ $fork = on ]; then
+	# disbale debug in fork mode
+	debug=off
+
+	# Drop privileges on wearables if needed
+	[ $jail = off ] && [ $user != root ] && JAIL_UID=`id -u $user`
+
+	while read token tail; do
+		if [ x$token = xenv ] ; then
+			config_var=${tail%=*}
+			eval var_value=\$$config_var
+			# if variable exists do not change it
+			if [ -z $var_value ] ; then
+				eval $tail
+			fi
+		elif [ x$token = xexport ] ; then
+			eval export $tail
+		fi
+	done < /etc/init/node_fork_server.conf
+	unset config_var
+	unset var_value
+
+	NFS_SCRIPT="$SERVICE_LAUNCHER/bootstrap-node.js"
+	NFS_USE_OPTIONS="NFS_SCRIPT"
+
+	if [ $NODE_FORK_SERVER_HOST ] ; then
+		NFS_USE_OPTIONS="$NFS_USE_OPTIONS NODE_FORK_SERVER_HOST"
+	fi
+
+	# insert params to enter jail environment in fork_server
+	if [ $JAIL_ROOT  ] ; then
+		NFS_USE_OPTIONS="$NFS_USE_OPTIONS JAIL_ROOT"
+	fi
+	if [ $JAIL_APPID ] ; then
+		NFS_USE_OPTIONS="$NFS_USE_OPTIONS JAIL_APPID"
+	fi
+	if [ $JAIL_HOME ] ; then
+		NFS_USE_OPTIONS="$NFS_USE_OPTIONS JAIL_HOME"
+	fi
+	if [ $JAIL_UID ] ; then
+		NFS_USE_OPTIONS="$NFS_USE_OPTIONS JAIL_UID"
+	fi
+	if [ $JAIL_GID ] ; then
+		NFS_USE_OPTIONS="$NFS_USE_OPTIONS JAIL_GID"
+	fi
+
+	NFS_ARG_OPTIONS=$1
+else
+	JS_ENGINE="$NODE --harmony"
+
+	# We can only adjust heap size when not using fork server
+	if [ $heap_size -gt 0 ]; then
+		COMMON_OPTIONS="--max_old_space_size=$heap_size"
+	fi
+	if [ $enable_gc = on ] ; then
+		COMMON_OPTIONS="$COMMON_OPTIONS --expose_gc"
+	fi
+	COMMON_OPTIONS="$COMMON_OPTIONS $SERVICE_LAUNCHER/bootstrap-node.js"
+fi
+
+if [ $fork = on ]; then
+	NFS_ARG_OPTIONS="$NFS_ARG_OPTIONS -- $CGROUP $ROLES_PATH"
+else
+	COMMON_APPEND=" --  $CGROUP $ROLES_PATH"
+fi
+
+if [ $debug = on ] ; then
+	timeouts=off
+	inspector_interface="`ifconfig eth0|grep 'inet addr'|cut -d':' -f2|cut -d' ' -f1`"
+	# check if node-inspector is not already running
+	if [ -z "$(pgrep -f node-inspector)" ]; then
+		node-inspector --web-port=${inspector_port} --web-host=${inspector_interface} &
+	fi
+	# unified services should send USR1 signal to node process
+	if [ $unified = on ]; then
+		pkill -USR1 -f unified_service_server
+	fi
+	COMMAND_STRING="$JS_ENGINE --debug=$debugger_port $COMMON_OPTIONS"
+else
+	COMMAND_STRING="$JS_ENGINE $COMMON_OPTIONS"
+fi
+
+FRAMEWORK_OPTIONS=
+if [ $timeouts = off ] ; then
+	FRAMEWORK_OPTIONS="$FRAMEWORK_OPTIONS --disable-timeouts"
+fi
+
+if [ $create_activity = off ] ; then
+	FRAMEWORK_OPTIONS="$FRAMEWORK_OPTIONS --disable-activity-creation"
+fi
+
+if [ $respawn = on ] ; then
+	FRAMEWORK_OPTIONS="$FRAMEWORK_OPTIONS --respawn"
+fi
+
+if [ $fork = on ]; then
+	# include arguments after the -- in command line to script
+	for i ; do
+		NFS_ARG_OPTIONS="$NFS_ARG_OPTIONS $i"
+	done
+
+	request="{\"spawn\":true,"
+	for i in $NFS_USE_OPTIONS; do
+		nfs_spawner_quote=1
+		case $i in
+			JAIL_ROOT)
+				nfs_spawner_parameter="chroot"
+				;;
+			JAIL_HOME)
+				nfs_spawner_parameter="home"
+				;;
+			JAIL_APPID)
+				nfs_spawner_parameter="appid"
+				;;
+			JAIL_UID)
+				nfs_spawner_parameter="j_uid"
+				nfs_spawner_quote=0
+				;;
+			JAIL_GID)
+				nfs_spawner_parameter="j_gid"
+				nfs_spawner_quote=0
+				;;
+			NFS_SCRIPT)
+				nfs_spawner_parameter="script"
+				;;
+			*)
+				;;
+		esac
+		if [ $nfs_spawner_parameter ] ; then
+			eval value=\$$i
+			if [ $nfs_spawner_quote -eq 0 ] ; then
+				 request="$request \"$nfs_spawner_parameter\":$value,"
+			else
+				 request="$request \"$nfs_spawner_parameter\":\"$value\","
+			fi
+			unset value
+			unset nfs_spawner_parameter
+		fi
+		unset nfs_spawner_qoute
+	done
+	request="$request \"args\":["
+	comma=""
+	for i in $NFS_ARG_OPTIONS $FRAMEWORK_OPTIONS; do
+		request="$request$comma\"$i\""
+		comma=","
+	done
+	request="$request]"
+	request="$request}"
+else
+	# include arguments after the -- in command line to script
+	COMMAND_STRING="$COMMAND_STRING $COMMON_APPEND $* $FRAMEWORK_OPTIONS"
+fi
+INPUT_ARGS="$COMMON_APPEND $@ $FRAMEWORK_OPTIONS"
+
+if [ $verbose = on ] ; then
+	echo $JAIL_STRING $COMMAND_STRING
+fi
+
+if [ $unified = on ]; then
+        #echo "Input Arguments---->$INPUT_ARGS"
+	logger -s "[run-js-service] running on unified service"
+	logger -s "[run-js-service] Input Arguments---->$INPUT_ARGS"
+        printf "$INPUT_ARGS" | nc local:/var/run/unified_service_server 7778
+elif [ $fork = on ]; then
+	if [ $NODE_FORK_SERVER_HOST ] ; then
+		if [ $NODE_FORK_SERVER_HOST = ${NODE_FORK_SERVER_HOST#/*} ] ; then
+			# host name does not start with '/', it is not a unix socket file name
+			NS_URL=$NODE_FORK_SERVER_HOST
+		else
+			# host name starts with '/', it is a unix socket file name
+			NS_URL=local:$NODE_FORK_SERVER_HOST
+		fi
+	else
+		# default host is localhost
+		NS_URL=127.0.0.1
+	fi
+	response=`printf "$request" | $BIN_PATH/nc $NS_URL 9000`
+	if [ $? -eq 0 ] ; then
+		if [ $verbose = on ] ; then
+			if echo $response |grep -q '"spawned":true' ; then
+				echo "Service started"
+			else
+				echo $response |sed -n 's/.*"errorText":"\(.*\)".*/\1/p'
+			fi
+		fi
+	fi
+else
+	if [ -z "$JAIL_STRING" -a $user != root ]; then
+		exec su -s /bin/sh -c 'exec "$0" "$@"' $user -- $COMMAND_STRING
+	else
+		exec $JAIL_STRING $COMMAND_STRING
+	fi
+fi
