@@ -103,7 +103,7 @@ function loadAndStart(paramsToScript, appId) {
 		//console.log('loading node module from ' + service_dir);
 		var mod = require(service_dir);
 		if (mod.run) {
-			mod.run(name);
+			mod.run(appId);
 		}
 	} else if (fs.existsSync('sources.json')) { // mojoservice-based service
 		loadSource();
