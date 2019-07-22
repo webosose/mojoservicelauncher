@@ -1,5 +1,5 @@
 #! /bin/sh
-# Copyright (c) 2009-2018 LG Electronics, Inc.
+# Copyright (c) 2009-2019 LG Electronics, Inc.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -21,7 +21,6 @@ verbose=off
 debug=off
 fork=off
 debugger_port=5885
-inspector_port=8080
 timeouts=on
 heap_size=0	# 0 means use default
 enable_gc=off
@@ -64,13 +63,12 @@ do
 		-j)  jail=on;;
 		-u)  unified=on;;
 		-n)  ;;
-		-i)  inspector_port=$2;shift;debug=on;;
 		-r)  user=root;;
 		-l)  user=$2;shift;;
 		-w)  respawn=on;;
 		--)  shift; break;;
 		-*)
-		echo >&2 "usage: $0 [-v] [-d] [-f] [-s size] [-p debugger-port] [-j] [-k] [-n] [-i inspector-port] directory"
+		echo >&2 "usage: $0 [-v] [-d] [-f] [-s size] [-p debugger-port] [-j] [-k] [-n] directory"
 		echo >&2 "-v : verbose mode"
 		echo >&2 "-a : disable activity creation -- used only for system services"
 		echo >&2 "-d : enable debugger"
@@ -81,7 +79,6 @@ do
 		echo >&2 "-k : disable timeouts (keep running)"
 		echo >&2 "-j : enable jailer"
 		echo >&2 "-n : use node.js engine (now the default, this option is still recognized for compatibility)"
-		echo >&2 "-i [port] : set port used by node-inspector [default: 8080]"
 		echo >&2 "-u : unified service -- used only for system services"
 		echo >&2 "-r : run as root user"
 		echo >&2 "-l user : run under privileges of specified user (login name)"
@@ -171,15 +168,6 @@ case "${SERVICE_PATH}" in
 				* ) debugger_port=5885 ;;
 			esac
 			echo "setting debugger port to $debugger_port"
-		fi
-		if [ -f "$ares_config/inspector-port" ]; then
-			debug=on
-			inspector_port=`cat "$ares_config/inspector-port"`
-			case "$inspector_port" in
-				[0-9][0-9][0-9][0-9]|[0-9][0-9][0-9][0-9][0-9]) ;;
-				* ) inspector_port=8080 ;;
-			esac
-			echo "setting inspector port to $inspector_port"
 		fi
 		ROM_SERVICE=off
 		ROLES_PATH=/var/palm/ls2-dev
@@ -377,16 +365,7 @@ fi
 
 if [ $debug = on ] ; then
 	timeouts=off
-	inspector_interface="`ifconfig eth0|grep 'inet addr'|cut -d':' -f2|cut -d' ' -f1`"
-	# check if node-inspector is not already running
-	if [ -z "$(pgrep -f node-inspector)" ]; then
-		node-inspector --web-port=${inspector_port} --web-host=${inspector_interface} &
-	fi
-	# unified services should send USR1 signal to node process
-	if [ $unified = on ]; then
-		pkill -USR1 -f unified_service_server
-	fi
-	COMMAND_STRING="$JS_ENGINE --debug=$debugger_port $COMMON_OPTIONS"
+	COMMAND_STRING="$JS_ENGINE --inspect --inspect-port=127.0.0.1:$debugger_port $COMMON_OPTIONS"
 else
 	COMMAND_STRING="$JS_ENGINE $COMMON_OPTIONS"
 fi
