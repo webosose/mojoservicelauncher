@@ -447,10 +447,7 @@ if [ $verbose = on ] ; then
 fi
 
 # change SMACK exec label
-smack_status=$(smackctl status 2>/dev/null)
-if [ "$smack_status" = "SmackFS is mounted to /sys/fs/smackfs/" ]; then
-	echo "webOS::Service::${FULL_SERVICE_NAME}" > /proc/self/attr/current
-fi
+echo "webOS::Service::${FULL_SERVICE_NAME}" > /proc/self/attr/current 2>/dev/null
 
 if [ $unified = on ]; then
         #echo "Input Arguments---->$INPUT_ARGS"
