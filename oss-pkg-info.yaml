@@ -1,0 +1,4 @@
+Open Source Software Package:
+- name: webosOSE-mojoservicelauncher
+  source: git://github.com/webosose/mojoservicelauncher
+  license: Apache-2.0
