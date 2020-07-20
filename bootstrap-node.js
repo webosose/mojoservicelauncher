@@ -1,4 +1,4 @@
-// Copyright (c) 2009-2018 LG Electronics, Inc.
+// Copyright (c) 2009-2020 LG Electronics, Inc.
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -17,43 +17,6 @@ var bootstrap = require('./bootstrap');
 var fs = global['fs'] ? global['fs'] : require('fs');
 
 appController = undefined;
-
-function loadSource() {
-	try {
-		var files = JSON.parse(bootstrap.loadFile('sources.json', 'utf8'));
-		var len = files.length;
-		var i = 0;
-		for (; i < len; i++) {
-			if (!files[i].override) {
-				break;
-			}
-			MojoLoader.override(files[i].override);
-		}
-
-		var webos = global['webos'] ? global['webos'] : require('webos');
-		IMPORTS.mojoservice = global['mojolibname'] ? global['mojolibname'] : MojoLoader.require({name: 'mojoservice', version: '1.0'}).mojoservice;
-
-		for (; i < len; i++) {
-			var file = files[i];
-			file.source && webos.include(file.source);
-
-			if (file.library) {
-				var libname = MojoLoader.builtinLibName(file.library.name, file.library.version);
-				if (!global[libname]) {
-					IMPORTS[file.library.name] = MojoLoader.require(file.library)[file.library.name];
-				} else {
-					IMPORTS[file.library.name] = global[libname];
-				}
-			}
-		}
-	} catch (e) {
-		if (file) {
-			console.error('Loading failed in: ', file.source || file.library.name);
-		}
-		console.error(e.stack || e);
-		throw e;
-	}
-}
 
 function loadAndStart(paramsToScript, appId) {
 	bootstrap.setConsole(appId);
@@ -105,9 +68,6 @@ function loadAndStart(paramsToScript, appId) {
 		if (mod.run) {
 			mod.run(appId);
 		}
-	} else if (fs.existsSync('sources.json')) { // mojoservice-based service
-		loadSource();
-		appController = new IMPORTS.mojoservice.AppController(paramsToScript);
 	} else {
 		console.error("Couldn't determine launch file for service path " + service_dir);
 		throw new Error("Couldn't determine launch file for service path " + service_dir);
