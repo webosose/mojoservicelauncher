@@ -19,8 +19,6 @@ var fs = global['fs'] ? global['fs'] : require('fs');
 appController = undefined;
 
 function loadAndStart(paramsToScript, appId) {
-	bootstrap.setConsole(appId);
-
 	var service_dir = paramsToScript[1];
 
 	var palmbus = global['palmbus'] ? global['palmbus'] : require('palmbus');
