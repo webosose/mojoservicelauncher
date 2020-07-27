@@ -126,18 +126,6 @@ function getConsoleName(fullName) {
 	return cname;
 }
 
-exports.setConsole = function(consoleName) {
-	var cname = getConsoleName(consoleName);
-	var pmlog = global['pmloglib'] ? global['pmloglib'] : require('pmloglib');
-	if (pmlog.dir) {
-		delete console;
-		console = new pmlog.Console(cname);
-	} else {
-		console = pmlog;
-		console.name = cname;
-	}
-}
-
 exports.parse = function(loadAndStart, params) {
 	var conf = parseParams(params || process.argv);
 
