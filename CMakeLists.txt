@@ -1,4 +1,4 @@
-# Copyright (c) 2009-2018 LG Electronics, Inc.
+# Copyright (c) 2009-2024 LG Electronics, Inc.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -40,11 +40,8 @@ else ()
 endif()
 configure_file(run-js-service.in ${CMAKE_CURRENT_BINARY_DIR}/run-js-service @ONLY)
 
-#don't enable the fork_server with Node v0.10 or when distro mini
-if (NOT ${WEBOS_TARGET_DISTRO_VARIANT} MATCHES "mini")
-  install(FILES files/launch/node_fork_server DESTINATION ${WEBOS_INSTALL_SYSCONFDIR}/event.d)
-  install(FILES files/launch/node_fork_server.conf DESTINATION ${WEBOS_INSTALL_SYSCONFDIR}/init)
-endif()
+install(FILES files/launch/node_fork_server DESTINATION ${WEBOS_INSTALL_SYSCONFDIR}/event.d)
+install(FILES files/launch/node_fork_server.conf DESTINATION ${WEBOS_INSTALL_SYSCONFDIR}/init)
 #Note: The following line is commented out because it is relavent for unified server but platform build uses node fork server.
 #install(FILES files/launch/unified_service_server_factory.conf DESTINATION ${WEBOS_INSTALL_SYSCONFDIR}/init)
 install(FILES fork_server.js gcctrl.js DESTINATION ${WEBOS_INSTALL_WEBOS_PREFIX}/nodejs)
@@ -53,4 +50,3 @@ install(FILES bootstrap.js bootstrap-node.js domain-utils.js palm_bus_config.jso
 
 # Create empty directory (why?)
 install(DIRECTORY DESTINATION ${WEBOS_INSTALL_WEBOS_FRAMEWORKSDIR}/private/javascripts)
-
