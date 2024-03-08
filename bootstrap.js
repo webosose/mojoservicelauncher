@@ -16,29 +16,29 @@
 MojoLoader = global['mojoloader'] ? global['mojoloader'] : require('mojoloader');
 var fs = global['fs'] ? global['fs'] : require('fs');
 
-IMPORTS = {require: require};
+IMPORTS = { require: require };
 
 // Patch to convert legacy http calls to new ones
 var version = process.version.split('.');
 var majorVersion = version[0].substring(1);
 var minorVersion = version[1];
 if ((majorVersion == 0 && minorVersion >= 4) || majorVersion > 0) {
-	(function() {
+	(function () {
 		var http = require('http');
 		var https = require('https');
 		var EventEmitter = require('events').EventEmitter;
-		http.createClient = function(port, host, secure) {
+		http.createClient = function (port, host, secure) {
 			var module = secure ? https : http;
 			var client = new EventEmitter();
 			var options = {
 				port: port,
 				host: host
 			};
-			client.request = function(method, path, headers) {
+			client.request = function (method, path, headers) {
 				options.method = method;
 				options.path = path;
 				options.headers = headers;
-				var request = module.request(options, function(response) {});
+				var request = module.request(options, function (response) { });
 				return request;
 			};
 			return client;
@@ -97,7 +97,7 @@ function parseParams(params) {
 		args[0] = appId + '.js';
 
 		process.setArgs(args);
-		process.setName({shortname: shortname});
+		process.setName({ shortname: shortname });
 	} else {
 		// Node.js 0.10
 		if (!global.unified_service) {
@@ -126,7 +126,7 @@ function getConsoleName(fullName) {
 	return cname;
 }
 
-exports.setConsole = function(consoleName) {
+exports.setConsole = function (consoleName) {
 	var cname = getConsoleName(consoleName);
 	var pmlog = global['pmloglib'] ? global['pmloglib'] : require('pmloglib');
 	if (pmlog.dir) {
@@ -138,10 +138,10 @@ exports.setConsole = function(consoleName) {
 	}
 }
 
-exports.parse = function(loadAndStart, params) {
+exports.parse = async function (loadAndStart, params) {
 	var conf = parseParams(params || process.argv);
 
-	loadAndStart(conf.params, conf.appId);
+	await loadAndStart(conf.params, conf.appId);
 }
 
 exports.loadFile = loadFile;
