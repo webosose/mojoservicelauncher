@@ -18,7 +18,7 @@ var fs = global['fs'] ? global['fs'] : require('fs');
 
 appController = undefined;
 
-function loadAndStart(paramsToScript, appId) {
+async function loadAndStart(paramsToScript, appId) {
 	var service_dir = paramsToScript[1];
 
 	var palmbus = global['palmbus'] ? global['palmbus'] : require('palmbus');
@@ -33,7 +33,7 @@ function loadAndStart(paramsToScript, appId) {
 	if (process.getuid() === 0) {
 		var dir = paramsToScript[0];
 		try {
-			var publicRolePath  = dir + '/roles/pub/' + appId + '.json';
+			var publicRolePath = dir + '/roles/pub/' + appId + '.json';
 			var privateRolePath = dir + '/roles/prv/' + appId + '.json';
 
 			var publicHandle = null;
@@ -61,10 +61,25 @@ function loadAndStart(paramsToScript, appId) {
 	}
 
 	if (fs.existsSync('package.json')) { // webos-service based Node module
-		//console.log('loading node module from ' + service_dir);
-		var mod = require(service_dir);
-		if (mod.run) {
-			mod.run(appId);
+		if (fs.existsSync(path.join(service_dir, 'node_modules'))) {
+			// TODO: ideally, we would enumerate everything in /usr/lib/node_modules and symlink it, but really this should be done at package install time
+			try {
+				await fs.promises.symlink('/usr/lib/node_modules/webos-service', path.join(service_dir, 'node_modules/webos-service'));
+			} catch (err) {
+				// ignore, probably symlinked already, or service author included it.
+			}
+		} else {
+			try {
+				await fs.promises.symlink('/usr/lib/node_modules', path.join(service_dir, 'node_modules'));
+			} catch {
+				// ignore, probably symlinked already
+			}
+		}
+
+		const importPath = require.resolve(service_dir);
+		const serviceModule = await import(importPath);
+		if (serviceModule && serviceModule.run && typeof serviceModule.run === 'function') {
+			serviceModule.run(appId);
 		}
 	} else {
 		console.error("Couldn't determine launch file for service path " + service_dir);
